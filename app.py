@@ -4,7 +4,7 @@ from pypdf import PdfReader
 
 st.set_page_config(page_title="데이페이 계약서 변환기", page_icon="📷")
 st.title("📷 데이페이 계약서 자동 변환기")
-st.write("계약서 PDF 파일을 업로드하면 이름, 날짜, 장비(관리번호 포함), 비고란을 완벽하게 추출합니다.")
+st.write("계약서 PDF 파일을 업로드하면 이름, 날짜, 장비(관리번호 변환), 비고란을 완벽하게 추출합니다.")
 
 uploaded_file = st.file_uploader("계약서 PDF 파일을 여기에 드래그해 주세요", type=["pdf"])
 
@@ -19,7 +19,6 @@ if uploaded_file is not None:
                 text += page_text + "\n"
 
         equipments = []
-        
         renter_name = ""
         rent_start = ""
         rent_end = ""
@@ -44,10 +43,24 @@ if uploaded_file is not None:
             "스탠드", "소프트박스", "플레이트", "클램프", "케이블", "젠더", "가방", "무선", "릴선", "CFexpress", "Umbrella", "Marsace"
         ]
 
-        for line in text.split('\n'):
-            line_str = line.strip()
-            if not line_str:
-                continue
+        # 빈 줄 제거 후 리스트로 만들기
+        lines = [line.strip() for line in text.split('\n') if line.strip()]
+        
+        # 관리번호 변환용 함수 (하이픈 뒤 숫자만 추출하여 괄호 씌우고, 2자리일 경우 '합정' 추가)
+        def format_k_number(match):
+            nums_str = match.group(1)
+            nums = [n.strip() for n in nums_str.split(',')]
+            res = []
+            for n in nums:
+                if len(n) == 2:
+                    res.append(f"({n})합정")
+                else:
+                    res.append(f"({n})")
+            return " ".join(res)
+
+        i = 0
+        while i < len(lines):
+            line_str = lines[i]
             
             # TOTAL 글자를 만나면 장비 추출 중단
             if "TOTAL" in line_str.upper():
@@ -69,25 +82,43 @@ if uploaded_file is not None:
 
             # 일반 계약 문구 제외
             if any(ex in line_str for ex in exclude_keywords):
+                i += 1
                 continue
 
             # 3. 장비 정보 추출
-            is_equipment = ('₩' in line_str) or any(k.lower() in line_str.lower() for k in keywords)
+            is_equipment = ('₩' in line_str) or any(k.lower() in line_str.lower() for k in keywords) or re.search(r'K\d{4,5}', line_str)
 
             if is_equipment:
+                # 다음 줄이 잘려있는지 확인하고 병합
+                while i + 1 < len(lines):
+                    next_line = lines[i+1]
+                    if "TOTAL" in next_line.upper():
+                        break
+                    
+                    is_next_new_main = bool(re.match(r'^\d+[\s\.]+', next_line))
+                    has_k_current = bool(re.search(r'K\d{4,5}', line_str))
+                    has_k_next = bool(re.search(r'K\d{4,5}', next_line))
+                    
+                    if not is_next_new_main and not has_k_current and has_k_next:
+                        line_str += " " + next_line
+                        i += 1
+                    else:
+                        break
+                        
                 clean_line = line_str.replace('|', ' ').strip()
                 
                 # 메인 장비(숫자 있음)인지 서브 장비(순번 없음)인지 판별
                 is_main = bool(re.match(r'^\d+[\s\.]+', clean_line))
                 
-                # 맨 앞 순번 숫자 제거
+                # 불필요한 부분 정리 (순번, 가격)
                 clean_line = re.sub(r'^\d+[\s\.]+', '', clean_line)
-                
-                # 맨 뒤 가격 제거
                 clean_line = re.sub(r'\s*₩\s*[\d,]+.*$', '', clean_line)
                 clean_line = re.sub(r'\s+[\d,]+원.*$', '', clean_line)
                 
-                # 불필요한 띄어쓰기만 정리 (관리번호 삭제 코드 제거됨)
+                # ★ 관리번호(K00000-00)를 (00) 양식으로 텍스트 치환
+                clean_line = re.sub(r'\bK\d{4,5}-((?:\d+(?:\s*,\s*\d+)*))', format_k_number, clean_line)
+                clean_line = re.sub(r'\bK\d{4,5}\b', '', clean_line) # 하이픈 없는 찌꺼기 K번호 제거
+                
                 clean_line = re.sub(r'\s+', ' ', clean_line).strip()
                 
                 # 수량 분리 및 기호 부여
@@ -100,11 +131,14 @@ if uploaded_file is not None:
                         if qty == '1':
                             equipments.append(f"{prefix}{name}")
                         else:
-                            equipments.append(f"{prefix}{name} {qty}EA")
+                            # 2개 이상일 때 앞에 '-- ' 추가
+                            equipments.append(f"{prefix}{name} -- {qty}EA")
                 else:
                     if clean_line:
                         prefix = "- " if is_main else "ㄴ "
                         equipments.append(f"{prefix}{clean_line}")
+
+            i += 1
 
         # 4. 최종 결과 출력 조합
         result = f"👤 대여자: {renter_name if renter_name else '확인 불가'}\n"
@@ -122,8 +156,9 @@ if uploaded_file is not None:
             result += f"\n*비고\n{remarks}\n"
 
         st.success("양식 변환 및 추출 완료!")
-        st.subheader("캘린더 복사용 결과")
-        st.code(result.strip(), language="text")
+        
+        # 출력 방식을 일반 텍스트 박스로 변경하여 복사 시 줄바꿈 유지
+        st.text_area("결과 텍스트 (박스 안을 클릭하고 Ctrl+A, Ctrl+C 로 복사하세요)", result.strip(), height=500)
 
     except Exception as e:
         st.error(f"오류 발생: {str(e)}")
