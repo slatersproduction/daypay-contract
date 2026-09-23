@@ -45,16 +45,14 @@ if uploaded_file is not None:
 
         lines = [line.strip() for line in text.split('\n') if line.strip()]
         
-        # ★ 관리번호 변환용 함수 (쉼표/특수쉼표 처리 및 지점명 띄어쓰기 추가)
+        # 관리번호 변환용 함수
         def format_k_number(match):
             nums_str = match.group(1)
-            # 일반 쉼표(,)와 특수 쉼표(、) 모두 분리 기준으로 사용
             nums = re.split(r'[,、]', nums_str)
             res = []
             for n in nums:
                 n = n.strip()
                 if not n: continue
-                # 2자리일 경우 합정, 3자리일 경우 부천 추가 (띄어쓰기 포함)
                 if len(n) == 2:
                     res.append(f"({n}) 합정")
                 elif len(n) == 3:
@@ -89,20 +87,26 @@ if uploaded_file is not None:
             is_equipment = ('₩' in line_str) or any(k.lower() in line_str.lower() for k in keywords) or re.search(r'K\d{4,5}', line_str)
 
             if is_equipment:
+                # 똑똑한 줄 합치기 (오류 수정)
                 while i + 1 < len(lines):
                     next_line = lines[i+1]
                     if "TOTAL" in next_line.upper():
                         break
                     
-                    is_next_new_main = bool(re.match(r'^\d+[\s\.]+', next_line))
-                    has_k_current = bool(re.search(r'K\d{4,5}', line_str))
-                    has_k_next = bool(re.search(r'K\d{4,5}', next_line))
-                    
-                    if not is_next_new_main and not has_k_current and has_k_next:
-                        line_str += " " + next_line
-                        i += 1
-                    else:
+                    # 1. 현재 줄에 가격(₩)이 있으면 완벽한 한 줄이므로 절대 합치지 않음
+                    if '₩' in line_str:
                         break
+                    
+                    is_next_new_main = bool(re.match(r'^\d+[\s\.]+', next_line))
+                    has_kw_next = any(k.lower() in next_line.lower() for k in keywords)
+                    
+                    # 2. 다음 줄이 숫자(1, 2)로 시작하거나, 또 다른 장비 브랜드 이름이 있다면 합치지 않음
+                    if is_next_new_main or has_kw_next:
+                        break
+                    
+                    # 위 조건들을 모두 통과했다면 잘려나간 부속 텍스트(예: USM)이므로 안심하고 합침
+                    line_str += " " + next_line
+                    i += 1
                         
                 clean_line = line_str.replace('|', ' ').strip()
                 
@@ -112,7 +116,6 @@ if uploaded_file is not None:
                 clean_line = re.sub(r'\s*₩\s*[\d,]+.*$', '', clean_line)
                 clean_line = re.sub(r'\s+[\d,]+원.*$', '', clean_line)
                 
-                # ★ 쉼표(,) 및 특수 쉼표(、)를 모두 인식하도록 정규식 수정
                 clean_line = re.sub(r'\bK\d{4,5}-((?:\d+(?:\s*[,、]\s*\d+)*))', format_k_number, clean_line)
                 clean_line = re.sub(r'\bK\d{4,5}\b', '', clean_line)
                 
