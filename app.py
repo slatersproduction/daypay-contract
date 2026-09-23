@@ -4,7 +4,7 @@ from pypdf import PdfReader
 
 st.set_page_config(page_title="데이페이 계약서 변환기", page_icon="📷")
 st.title("📷 데이페이 계약서 자동 변환기")
-st.write("계약서 PDF 파일을 업로드하면 이름, 날짜, 장비를 누락 없이 추출합니다.")
+st.write("계약서 PDF 파일을 업로드하면 이름, 날짜, 장비(관리번호 포함), 비고란을 완벽하게 추출합니다.")
 
 uploaded_file = st.file_uploader("계약서 PDF 파일을 여기에 드래그해 주세요", type=["pdf"])
 
@@ -23,6 +23,12 @@ if uploaded_file is not None:
         renter_name = ""
         rent_start = ""
         rent_end = ""
+        remarks = ""
+        
+        # 비고란 추출
+        remarks_match = re.search(r'비\s*고\s*(.*?)(?=수량|총\s*대여시간|소계|입금은행|\Z)', text, re.DOTALL)
+        if remarks_match:
+            remarks = remarks_match.group(1).replace('\n', ' ').replace('|', '').strip()
         
         exclude_keywords = [
             "계약서", "사업자등록번호", "대표자", "연락처", "주소", "대여기간", "반납일시",
@@ -35,7 +41,7 @@ if uploaded_file is not None:
             "FX", "Alpha", "EOS", "Sennheiser", "Rode", "Godox", "Nanlite", "Profoto",
             "Blackmagic", "RED", "ARRI", "Sigma", "Samyang", "Tamron", "Nikon", "Panasonic",
             "삼각대", "헤드", "조명", "배터리", "메모리", "마이크", "모니터", "송수신기",
-            "스탠드", "소프트박스", "플레이트", "클램프", "케이블", "젠더", "가방", "무선"
+            "스탠드", "소프트박스", "플레이트", "클램프", "케이블", "젠더", "가방", "무선", "릴선", "CFexpress", "Umbrella", "Marsace"
         ]
 
         for line in text.split('\n'):
@@ -43,12 +49,16 @@ if uploaded_file is not None:
             if not line_str:
                 continue
             
-            # 1. 이름 추출 (계약회사명 등 불필요한 단어 깔끔하게 제거)
+            # TOTAL 글자를 만나면 장비 추출 중단
+            if "TOTAL" in line_str.upper():
+                break
+            
+            # 1. 이름 추출
             if "임차인" in line_str and not renter_name:
                 name_clean = re.sub(r'(임차인|성명|귀하|:|\||계약회사명)', '', line_str).strip()
                 if name_clean: renter_name = name_clean
             
-            # 2. 대여/반납 일시 추출 ('수령지점/일시', '반납지점/일시' 키워드 추가)
+            # 2. 대여/반납 일시 추출
             if not rent_start and re.search(r'(수령지점\s*/?\s*일시|대여일시|대여기간)', line_str):
                 clean_str = re.sub(r'.*(수령지점\s*/?\s*일시|대여일시|대여기간)[\s:\|]*', '', line_str).strip()
                 if clean_str: rent_start = clean_str
@@ -61,28 +71,42 @@ if uploaded_file is not None:
             if any(ex in line_str for ex in exclude_keywords):
                 continue
 
-            # 장비 정보 추출
+            # 3. 장비 정보 추출
             is_equipment = ('₩' in line_str) or any(k.lower() in line_str.lower() for k in keywords)
 
             if is_equipment:
                 clean_line = line_str.replace('|', ' ').strip()
+                
+                # 메인 장비(숫자 있음)인지 서브 장비(순번 없음)인지 판별
+                is_main = bool(re.match(r'^\d+[\s\.]+', clean_line))
+                
+                # 맨 앞 순번 숫자 제거
                 clean_line = re.sub(r'^\d+[\s\.]+', '', clean_line)
+                
+                # 맨 뒤 가격 제거
                 clean_line = re.sub(r'\s*₩\s*[\d,]+.*$', '', clean_line)
                 clean_line = re.sub(r'\s+[\d,]+원.*$', '', clean_line)
                 
+                # 불필요한 띄어쓰기만 정리 (관리번호 삭제 코드 제거됨)
+                clean_line = re.sub(r'\s+', ' ', clean_line).strip()
+                
+                # 수량 분리 및 기호 부여
                 match = re.search(r'\s+(\d+)$', clean_line)
                 if match:
                     qty = match.group(1)
                     name = clean_line[:match.start()].strip()
                     if name:
+                        prefix = "- " if is_main else "ㄴ "
                         if qty == '1':
-                            equipments.append(name)
+                            equipments.append(f"{prefix}{name}")
                         else:
-                            equipments.append(f"{name} {qty}EA")
+                            equipments.append(f"{prefix}{name} {qty}EA")
                 else:
                     if clean_line:
-                        equipments.append(clean_line)
+                        prefix = "- " if is_main else "ㄴ "
+                        equipments.append(f"{prefix}{clean_line}")
 
+        # 4. 최종 결과 출력 조합
         result = f"👤 대여자: {renter_name if renter_name else '확인 불가'}\n"
         result += f"📅 대여 일시: {rent_start if rent_start else '확인 불가'}\n"
         result += f"📅 반납 일시: {rent_end if rent_end else '확인 불가'}\n\n"
@@ -90,11 +114,14 @@ if uploaded_file is not None:
         
         if equipments:
             for eq in equipments:
-                result += f"- {eq}\n"
+                result += f"{eq}\n"
         else:
             result += "- 장비 목록을 자동으로 찾을 수 없습니다.\n"
+            
+        if remarks:
+            result += f"\n*비고\n{remarks}\n"
 
-        st.success("대여자 정보 및 장비 추출 완료!")
+        st.success("양식 변환 및 추출 완료!")
         st.subheader("캘린더 복사용 결과")
         st.code(result.strip(), language="text")
 
