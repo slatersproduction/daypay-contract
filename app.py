@@ -4,7 +4,7 @@ from pypdf import PdfReader
 
 st.set_page_config(page_title="데이페이 계약서 변환기", page_icon="📷")
 st.title("📷 데이페이 계약서 자동 변환기")
-st.write("계약서 PDF 파일을 업로드하면 이름, 날짜, 장비(지점명 자동 추가), 비고란을 완벽하게 추출합니다.")
+st.write("계약서 PDF 파일을 업로드하면 구조를 분석하여 모든 장비를 키워드 없이 완벽하게 추출합니다.")
 
 uploaded_file = st.file_uploader("계약서 PDF 파일을 여기에 드래그해 주세요", type=["pdf"])
 
@@ -18,7 +18,6 @@ if uploaded_file is not None:
             if page_text:
                 text += page_text + "\n"
 
-        equipments = []
         renter_name = ""
         rent_start = ""
         rent_end = ""
@@ -27,50 +26,53 @@ if uploaded_file is not None:
         remarks_match = re.search(r'비\s*고\s*(.*?)(?=수량|총\s*대여시간|소계|입금은행|\Z)', text, re.DOTALL)
         if remarks_match:
             remarks = remarks_match.group(1).replace('\n', ' ').replace('|', '').strip()
-        
-        exclude_keywords = [
-            "계약서", "사업자등록번호", "대표자", "연락처", "주소", "대여기간", "반납일시",
-            "총금액", "결제금액", "보증금", "서명", "인", "특약사항", "주의사항", "환불", 
-            "영수증", "부가가치세", "합계", "데이페이", "수령지점", "반납지점", "임차인"
-        ]
 
-        # Sirui, SD, 샌디스크 등 키워드 대폭 추가
-        keywords = [
-            "Sony", "Canon", "DJI", "Aputure", "Manfrotto", "렌즈", "카메라", "GM", "Mark",
-            "FX", "Alpha", "EOS", "Sennheiser", "Rode", "Godox", "Nanlite", "Profoto",
-            "Blackmagic", "RED", "ARRI", "Sigma", "Samyang", "Tamron", "Nikon", "Panasonic",
-            "삼각대", "헤드", "조명", "배터리", "메모리", "마이크", "모니터", "송수신기",
-            "스탠드", "소프트박스", "플레이트", "클램프", "케이블", "젠더", "가방", "무선", "릴선", "CFexpress", "Umbrella", "Marsace", "Sirui", "SD", "샌디스크"
-        ]
-
-        # 빈 줄 제거 (원래의 들여쓰기 정보를 유지하기 위해 lstrip() 대신 그냥 유지)
         lines = [line for line in text.split('\n') if line.strip()]
         
-        def format_k_number(match):
-            nums_str = match.group(1)
-            nums = re.split(r'[,、]', nums_str)
-            res = []
-            for n in nums:
-                n = n.strip()
-                if not n: continue
-                if len(n) == 2:
-                    res.append(f"({n}) 합정")
-                elif len(n) == 3:
-                    res.append(f"({n}) 부천")
-                else:
-                    res.append(f"({n})")
-            return " ".join(res)
-
-        i = 0
-        in_equipment_section = False
+        equipments = []
+        in_table = False
         
-        while i < len(lines):
-            original_line = lines[i]
-            line_str = original_line.strip()
+        current_name = ""
+        current_qty = ""
+        current_is_main = False
+        
+        # 장비 텍스트와 관리번호를 최종 양식으로 다듬는 함수
+        def format_final_item(name, qty, is_main):
+            def repl(match):
+                nums_str = match.group(1)
+                nums = re.split(r'[,、]', nums_str)
+                res = []
+                for n in nums:
+                    n = n.strip()
+                    if not n: continue
+                    if len(n) == 2: res.append(f"({n}) 합정")
+                    elif len(n) == 3: res.append(f"({n}) 부천")
+                    else: res.append(f"({n})")
+                return " ".join(res)
+            
+            # 관리번호 괄호 치환 및 지점명 추가
+            name = re.sub(r'\bK\d{4,5}-((?:\d+(?:\s*[,、]\s*\d+)*))', repl, name)
+            name = re.sub(r'\bK\d{4,5}\b', '', name) # 하이픈 없는 K번호 찌꺼기 제거
+            name = re.sub(r'\s+', ' ', name).strip()
+            
+            q = qty if qty else "1"
+            prefix = "- " if is_main else "ㄴ "
+            
+            if q == "1":
+                return f"{prefix}{name}"
+            else:
+                return f"{prefix}{name} -- {q}EA"
+
+        for line in lines:
+            line_str = line.strip()
             
             if "TOTAL" in line_str.upper():
+                if current_name:
+                    equipments.append(format_final_item(current_name, current_qty, current_is_main))
+                in_table = False
                 break
-            
+                
+            # 기본 정보 추출 (표 밖의 내용)
             if "임차인" in line_str and not renter_name:
                 name_clean = re.sub(r'(임차인|성명|귀하|:|\||계약회사명)', '', line_str).strip()
                 if name_clean: renter_name = name_clean
@@ -83,79 +85,64 @@ if uploaded_file is not None:
                 clean_str = re.sub(r'.*(반납지점\s*/?\s*일시|반납일시)[\s:\|]*', '', line_str).strip()
                 if clean_str: rent_end = clean_str
 
-            if any(ex in line_str for ex in exclude_keywords):
-                i += 1
+            # 테이블(장비 목록) 시작 감지
+            if line_str == 'NO' or re.search(r'^NO[\s\|]*품명', line_str):
+                in_table = True
+                continue
+                
+            if not in_table:
+                continue
+                
+            # --- 여기서부터는 키워드 없이 '표 구조' 자체를 분석합니다 ---
+            clean_line = line_str.replace('|', '').strip()
+            
+            # 1. 쓸모없는 표 헤더나 빈칸 무시
+            if not clean_line or clean_line in ['품명', '관리번호', '수량', '금액', '보험', '보증금']:
+                continue
+            
+            # 2. 가격 기호(₩)나 원 단위 금액 무시
+            if '₩' in clean_line or re.match(r'^[\d,]+원$', clean_line):
+                continue
+                
+            # 3. 지점장비 안내 텍스트 무시
+            if clean_line in ['부천장비', '합정장비']:
                 continue
 
-            # 1. 키워드가 있거나 가격(₩)이 있는 메인 장비 판별
-            is_keyword_equip = ('₩' in line_str) or any(k.lower() in line_str.lower() for k in keywords) or re.search(r'K\d{4,5}', line_str)
-            
-            # 2. 메인 장비(순번 숫자)로 시작하는지 판별
-            is_main_start = bool(re.match(r'^\d+[\s\.]+', line_str.replace('|', '').strip()))
-            
-            # 3. 앞쪽에 공백(들여쓰기)이 있거나 파이프(|)로 시작하는 서브 장비 판별
-            is_indented_sub = original_line.startswith(' ') or line_str.startswith('|')
-            
-            # 메인 장비를 발견하면 장비 섹션 진입
-            if is_main_start:
-                in_equipment_section = True
-            
-            # 장비 섹션 안에 있고, 들여쓰기된 줄이거나 키워드가 있다면 장비로 추출
-            is_equipment = is_keyword_equip or (in_equipment_section and is_indented_sub and len(line_str) > 2)
-
-            if is_equipment:
-                while i + 1 < len(lines):
-                    next_line_original = lines[i+1]
-                    next_line = next_line_original.strip()
-                    
-                    if "TOTAL" in next_line.upper():
-                        break
-                    
-                    if '₩' in line_str:
-                        break
-                    
-                    is_next_new_main = bool(re.match(r'^\d+[\s\.]+', next_line.replace('|', '').strip()))
-                    has_kw_next = any(k.lower() in next_line.lower() for k in keywords)
-                    
-                    if is_next_new_main or has_kw_next:
-                        break
-                    
-                    line_str += " " + next_line
-                    i += 1
-                        
-                clean_line = line_str.replace('|', ' ').strip()
+            # 4. K번호만 단독으로 있는 줄이면 현재 장비 이름에 슬쩍 붙임
+            if re.match(r'^K\d{4,5}(?:-\d+)?(?:,\s*\d+)*$', clean_line):
+                current_name += f" {clean_line}"
+                continue
                 
-                is_main = bool(re.match(r'^\d+[\s\.]+', clean_line))
-                
-                clean_line = re.sub(r'^\d+[\s\.]+', '', clean_line)
-                clean_line = re.sub(r'\s*₩\s*[\d,]+.*$', '', clean_line)
-                clean_line = re.sub(r'\s+[\d,]+원.*$', '', clean_line)
-                
-                clean_line = re.sub(r'\bK\d{4,5}-((?:\d+(?:\s*[,、]\s*\d+)*))', format_k_number, clean_line)
-                clean_line = re.sub(r'\bK\d{4,5}\b', '', clean_line)
-                
-                # '부천장비' 같은 텍스트 제거
-                clean_line = re.sub(r'부천장비', '', clean_line)
-                
-                clean_line = re.sub(r'\s+', ' ', clean_line).strip()
-                
-                match = re.search(r'\s+(\d+)$', clean_line)
-                if match:
-                    qty = match.group(1)
-                    name = clean_line[:match.start()].strip()
-                    if name:
-                        prefix = "- " if is_main else "ㄴ "
-                        if qty == '1':
-                            equipments.append(f"{prefix}{name}")
-                        else:
-                            equipments.append(f"{prefix}{name} -- {qty}EA")
+            # 5. 순번(NO) 또는 수량(Qty) 처리 (문자 없이 순수 숫자만 있는 경우)
+            if re.match(r'^\d+$', clean_line):
+                if not current_name:
+                    current_is_main = True # 이름이 아직 없으면 순번 (메인 장비 시작)
                 else:
-                    if clean_line:
-                        prefix = "- " if is_main else "ㄴ "
-                        equipments.append(f"{prefix}{clean_line}")
+                    current_qty = clean_line # 이름이 있으면 그 장비의 수량
+                continue
+                
+            # 6. "1 | Canon..." 처럼 순번과 이름이 한 줄에 붙어서 나오는 경우
+            match_mixed = re.match(r'^(\d+)[\s\|]+(.+)', line_str)
+            if match_mixed and not current_name:
+                current_is_main = True
+                current_name = match_mixed.group(2).replace('|', '').strip()
+                continue
+                
+            # 7. 장비 이름 (일반 텍스트)
+            # 이미 이전 장비의 이름과 수량이 확보된 상태에서 또 텍스트가 나오면, 이전 장비 목록 완성!
+            if current_name and current_qty:
+                equipments.append(format_final_item(current_name, current_qty, current_is_main))
+                current_name = ""
+                current_qty = ""
+                current_is_main = False
+            
+            # 텍스트 이어 붙이기 (FIXED SET 등 두 줄로 쪼개진 이름 대응)
+            if current_name:
+                current_name += f" {clean_line}"
+            else:
+                current_name = clean_line
 
-            i += 1
-
+        # 최종 텍스트 조합
         result = f"👤 대여자: {renter_name if renter_name else '확인 불가'}\n"
         result += f"📅 대여 일시: {rent_start if rent_start else '확인 불가'}\n"
         result += f"📅 반납 일시: {rent_end if rent_end else '확인 불가'}\n\n"
