@@ -24,7 +24,6 @@ if uploaded_file is not None:
         rent_end = ""
         remarks = ""
         
-        # 비고란 추출
         remarks_match = re.search(r'비\s*고\s*(.*?)(?=수량|총\s*대여시간|소계|입금은행|\Z)', text, re.DOTALL)
         if remarks_match:
             remarks = remarks_match.group(1).replace('\n', ' ').replace('|', '').strip()
@@ -35,17 +34,18 @@ if uploaded_file is not None:
             "영수증", "부가가치세", "합계", "데이페이", "수령지점", "반납지점", "임차인"
         ]
 
+        # Sirui, SD, 샌디스크 등 키워드 대폭 추가
         keywords = [
             "Sony", "Canon", "DJI", "Aputure", "Manfrotto", "렌즈", "카메라", "GM", "Mark",
             "FX", "Alpha", "EOS", "Sennheiser", "Rode", "Godox", "Nanlite", "Profoto",
             "Blackmagic", "RED", "ARRI", "Sigma", "Samyang", "Tamron", "Nikon", "Panasonic",
             "삼각대", "헤드", "조명", "배터리", "메모리", "마이크", "모니터", "송수신기",
-            "스탠드", "소프트박스", "플레이트", "클램프", "케이블", "젠더", "가방", "무선", "릴선", "CFexpress", "Umbrella", "Marsace"
+            "스탠드", "소프트박스", "플레이트", "클램프", "케이블", "젠더", "가방", "무선", "릴선", "CFexpress", "Umbrella", "Marsace", "Sirui", "SD", "샌디스크"
         ]
 
-        lines = [line.strip() for line in text.split('\n') if line.strip()]
+        # 빈 줄 제거 (원래의 들여쓰기 정보를 유지하기 위해 lstrip() 대신 그냥 유지)
+        lines = [line for line in text.split('\n') if line.strip()]
         
-        # 관리번호 변환용 함수
         def format_k_number(match):
             nums_str = match.group(1)
             nums = re.split(r'[,、]', nums_str)
@@ -62,8 +62,11 @@ if uploaded_file is not None:
             return " ".join(res)
 
         i = 0
+        in_equipment_section = False
+        
         while i < len(lines):
-            line_str = lines[i]
+            original_line = lines[i]
+            line_str = original_line.strip()
             
             if "TOTAL" in line_str.upper():
                 break
@@ -84,27 +87,39 @@ if uploaded_file is not None:
                 i += 1
                 continue
 
-            is_equipment = ('₩' in line_str) or any(k.lower() in line_str.lower() for k in keywords) or re.search(r'K\d{4,5}', line_str)
+            # 1. 키워드가 있거나 가격(₩)이 있는 메인 장비 판별
+            is_keyword_equip = ('₩' in line_str) or any(k.lower() in line_str.lower() for k in keywords) or re.search(r'K\d{4,5}', line_str)
+            
+            # 2. 메인 장비(순번 숫자)로 시작하는지 판별
+            is_main_start = bool(re.match(r'^\d+[\s\.]+', line_str.replace('|', '').strip()))
+            
+            # 3. 앞쪽에 공백(들여쓰기)이 있거나 파이프(|)로 시작하는 서브 장비 판별
+            is_indented_sub = original_line.startswith(' ') or line_str.startswith('|')
+            
+            # 메인 장비를 발견하면 장비 섹션 진입
+            if is_main_start:
+                in_equipment_section = True
+            
+            # 장비 섹션 안에 있고, 들여쓰기된 줄이거나 키워드가 있다면 장비로 추출
+            is_equipment = is_keyword_equip or (in_equipment_section and is_indented_sub and len(line_str) > 2)
 
             if is_equipment:
-                # 똑똑한 줄 합치기 (오류 수정)
                 while i + 1 < len(lines):
-                    next_line = lines[i+1]
+                    next_line_original = lines[i+1]
+                    next_line = next_line_original.strip()
+                    
                     if "TOTAL" in next_line.upper():
                         break
                     
-                    # 1. 현재 줄에 가격(₩)이 있으면 완벽한 한 줄이므로 절대 합치지 않음
                     if '₩' in line_str:
                         break
                     
-                    is_next_new_main = bool(re.match(r'^\d+[\s\.]+', next_line))
+                    is_next_new_main = bool(re.match(r'^\d+[\s\.]+', next_line.replace('|', '').strip()))
                     has_kw_next = any(k.lower() in next_line.lower() for k in keywords)
                     
-                    # 2. 다음 줄이 숫자(1, 2)로 시작하거나, 또 다른 장비 브랜드 이름이 있다면 합치지 않음
                     if is_next_new_main or has_kw_next:
                         break
                     
-                    # 위 조건들을 모두 통과했다면 잘려나간 부속 텍스트(예: USM)이므로 안심하고 합침
                     line_str += " " + next_line
                     i += 1
                         
@@ -118,6 +133,9 @@ if uploaded_file is not None:
                 
                 clean_line = re.sub(r'\bK\d{4,5}-((?:\d+(?:\s*[,、]\s*\d+)*))', format_k_number, clean_line)
                 clean_line = re.sub(r'\bK\d{4,5}\b', '', clean_line)
+                
+                # '부천장비' 같은 텍스트 제거
+                clean_line = re.sub(r'부천장비', '', clean_line)
                 
                 clean_line = re.sub(r'\s+', ' ', clean_line).strip()
                 
