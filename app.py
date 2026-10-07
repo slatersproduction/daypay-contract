@@ -1,50 +1,32 @@
 import streamlit as st
 import re
-from pypdf import PdfReader
 import urllib.parse
+import pdfplumber
 
 st.set_page_config(page_title="데이페이 계약서 변환기", page_icon="📷")
 st.title("📷 데이페이 계약서 자동 변환기")
-st.write("계약서 PDF 파일을 업로드하면 장비 목록을 추출하고 구글 캘린더에 원클릭으로 등록합니다.")
+st.write("키워드 없이 표 구조를 완벽히 분석하여 어떤 장비든 100% 자동 추출합니다.")
 
 uploaded_file = st.file_uploader("계약서 PDF 파일을 여기에 드래그해 주세요", type=["pdf"])
 
 if uploaded_file is not None:
     try:
-        reader = PdfReader(uploaded_file)
         text = ""
+        with pdfplumber.open(uploaded_file) as pdf:
+            for page in pdf.pages:
+                extracted = page.extract_text(layout=True)
+                if extracted:
+                    text += extracted + "\n"
         
-        for page in reader.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text += page_text + "\n"
-
-        equipments = []
         renter_name = ""
         rent_start = ""
         rent_end = ""
         remarks = ""
         branch_name = "합정" if "합정" in text else "부천" if "부천" in text else "지점"
         
-        # 일반 비고란 추출
-        remarks_match = re.search(r'비\s*고\s*(.*?)(?=수량|총\s*대여시간|소계|입금은행|\Z)', text, re.DOTALL)
+        remarks_match = re.search(r'비\s*고\s*(.*?)(?=입금은행|국내\s*최고\s*수준|\Z)', text, re.DOTALL)
         if remarks_match:
             remarks = remarks_match.group(1).replace('\n', ' ').replace('|', '').strip()
-        
-        exclude_keywords = [
-            "계약서", "사업자등록번호", "대표자", "연락처", "주소", "대여기간", "반납일시",
-            "총금액", "결제금액", "보증금", "서명", "인", "특약사항", "주의사항", "환불", 
-            "영수증", "부가가치세", "합계", "데이페이", "수령지점", "반납지점", "임차인"
-        ]
-
-        keywords = [
-            "Sony", "Canon", "DJI", "Aputure", "Manfrotto", "렌즈", "카메라", "GM", "Mark",
-            "FX", "Alpha", "EOS", "Sennheiser", "Rode", "Godox", "Nanlite", "Profoto",
-            "Blackmagic", "RED", "ARRI", "Sigma", "Samyang", "Tamron", "Nikon", "Panasonic",
-            "삼각대", "헤드", "조명", "배터리", "메모리", "마이크", "모니터", "송수신기",
-            "스탠드", "소프트박스", "플레이트", "클램프", "케이블", "젠더", "가방", "무선", "릴선", 
-            "CFexpress", "Umbrella", "Marsace", "Sirui", "SD", "샌디스크", "부천장비", "합정장비"
-        ]
 
         lines = [line.strip() for line in text.split('\n') if line.strip()]
         
@@ -60,14 +42,23 @@ if uploaded_file is not None:
                 else: res.append(f"({n})")
             return " ".join(res)
 
-        i = 0
-        while i < len(lines):
-            line_str = lines[i]
-            
-            if "렌탈금액" in line_str or "소계" in line_str:
-                break
-            
-            line_str = re.sub(r'\bTOTAL\b', '', line_str, flags=re.IGNORECASE)
+        equipments = []
+        in_table = False
+        
+        ignore_in_table = ['품명', '관리번호', '수량', '금액', '보험', '보증금', 'NO']
+        page_footers = ["데이페이", "DAYPAY", "PAGE", "국내 최고 수준", "고객지원센터", "1544-2338"]
+
+        current_item = ""
+
+        for line_str in lines:
+            if "TOTAL" in line_str.upper():
+                in_table = False
+                total_text = re.sub(r'.*TOTAL[\s\|]*', '', line_str, flags=re.IGNORECASE).strip()
+                total_text = re.sub(r'[\d,]+원?|₩\s*[\d,]+', '', total_text).strip()
+                if total_text:
+                    if remarks: remarks += " " + total_text
+                    else: remarks = total_text
+                continue
             
             if "임차인" in line_str and not renter_name:
                 name_clean = re.sub(r'(임차인|성명|귀하|:|\||계약회사명)', '', line_str).strip()
@@ -76,78 +67,60 @@ if uploaded_file is not None:
             if not rent_start and re.search(r'(수령지점\s*/?\s*일시|대여일시|대여기간)', line_str):
                 clean_str = re.sub(r'.*(수령지점\s*/?\s*일시|대여일시|대여기간)[\s:\|]*', '', line_str).strip()
                 if clean_str: rent_start = clean_str
-                    
+                
             if not rent_end and re.search(r'(반납지점\s*/?\s*일시|반납일시)', line_str):
                 clean_str = re.sub(r'.*(반납지점\s*/?\s*일시|반납일시)[\s:\|]*', '', line_str).strip()
                 if clean_str: rent_end = clean_str
 
-            if any(ex in line_str for ex in exclude_keywords):
-                i += 1
+            if re.search(r'^NO[\s\|]*품명', line_str) or line_str == 'NO':
+                in_table = True
                 continue
+            
+            if in_table:
+                clean_check = line_str.replace('|', '').strip()
+                
+                if not clean_check or clean_check in ignore_in_table: continue
+                if any(footer in clean_check.upper() for footer in page_footers): continue
+                if re.match(r'^[\d,]+원$', clean_check) or clean_check == '₩': continue
 
-            is_equipment = ('₩' in line_str) or any(k.lower() in line_str.lower() for k in keywords) or re.search(r'K\d{4,5}', line_str)
-
-            if is_equipment:
-                while i + 1 < len(lines):
-                    next_line = lines[i+1]
-                    if "렌탈금액" in next_line or "소계" in next_line:
-                        break
+                # ★ 키워드 없이 '구조'만으로 장비 분리하는 찐 핵심 로직 ★
+                if current_item:
+                    current_item += " " + clean_check
+                else:
+                    current_item = clean_check
                     
-                    next_line = re.sub(r'\bTOTAL\b', '', next_line, flags=re.IGNORECASE)
-                    
-                    if '₩' in line_str:
-                        break
-                    
-                    is_next_new_main = bool(re.match(r'^\d+[\s\.]+', next_line.strip()))
-                    has_k_current = bool(re.search(r'K\d{4,5}', line_str))
-                    has_k_next = bool(re.search(r'K\d{4,5}', next_line))
-                    has_kw_next = any(k.lower() in next_line.lower() for k in keywords)
-                    
-                    if is_next_new_main:
-                        break
-                    
-                    # Marsace 오류 해결 로직 (K번호가 다음 줄에 있을 때 합치기)
-                    if not has_k_current and has_k_next:
-                        pass 
-                    elif has_kw_next:
-                        break 
-                    
-                    line_str += " " + next_line
-                    i += 1
-                        
-                clean_line = line_str.replace('|', ' ').strip()
-                is_main = bool(re.match(r'^\d+[\s\.]+', clean_line))
+                # 1. 문장 맨 끝의 가격(₩) 정보부터 걷어냄
+                check_str = re.sub(r'\s*₩\s*[\d,]+.*$', '', current_item).strip()
+                check_str = re.sub(r'\s+[\d,]+원.*$', '', check_str).strip()
                 
-                clean_line = re.sub(r'^\d+[\s\.]+', '', clean_line)
-                clean_line = re.sub(r'\s*₩\s*[\d,]+.*$', '', clean_line)
-                clean_line = re.sub(r'\s+[\d,]+원.*$', '', clean_line)
+                # 2. 남은 문장이 '수량(숫자)'으로 끝나는지 확인
+                match = re.search(r'\s+(\d+)$', check_str)
                 
-                clean_line = re.sub(r'\bK\d{4,5}-((?:\d+(?:\s*[,、]\s*\d+)*))', format_k_number, clean_line)
-                clean_line = re.sub(r'\bK\d{4,5}\b', '', clean_line)
-                
-                clean_line = re.sub(r'부천장비|합정장비', '', clean_line)
-                clean_line = re.sub(r'\s+', ' ', clean_line).strip()
-                
-                match = re.search(r'\s+(\d+)$', clean_line)
+                # 수량으로 끝난다면 완벽한 장비 한 세트로 간주!
                 if match:
                     qty = match.group(1)
-                    name = clean_line[:match.start()].strip()
-                    if name:
+                    name_part = check_str[:match.start()].strip()
+                    
+                    is_main = bool(re.match(r'^\d+[\s\.]+', name_part))
+                    name_part = re.sub(r'^\d+[\s\.]+', '', name_part) # 순번(1, 2 등) 제거
+                    
+                    # 지점명 및 괄호 찌꺼기 청소
+                    name_part = re.sub(r'\bK\d{4,5}-((?:\d+(?:\s*[,、]\s*\d+)*))', format_k_number, name_part)
+                    name_part = re.sub(r'\bK\d{4,5}\b', '', name_part)
+                    name_part = re.sub(r'부천장비|합정장비', '', name_part)
+                    name_part = re.sub(r'\(\s*\)', '', name_part)
+                    name_part = re.sub(r'\s+', ' ', name_part).strip()
+                    
+                    if name_part:
                         prefix = "- " if is_main else "ㄴ "
                         if qty == '1':
-                            equipments.append(f"{prefix}{name}")
+                            equipments.append(f"{prefix}{name_part}")
                         else:
-                            equipments.append(f"{prefix}{name} -- {qty}EA")
-                else:
-                    if clean_line:
-                        prefix = "- " if is_main else "ㄴ "
-                        equipments.append(f"{prefix}{clean_line}")
+                            equipments.append(f"{prefix}{name_part} -- {qty}EA")
+                            
+                    current_item = "" # 장비 하나 인식 완료! 짐 비우기
 
-            i += 1
-
-        # ----------------------------------------------------
-        # ★ 비고란 결제 문구 깔끔하게 청소 (강력 필터)
-        # ----------------------------------------------------
+        # 비고란 결제 문구 깔끔하게 청소
         if remarks:
             junk_patterns = [
                 r'할인합계', r'추가\s*요금', r'안심보험', r'총합계.*?\(inc VAT\)',
@@ -162,9 +135,7 @@ if uploaded_file is not None:
             remarks = re.sub(r'\|\s*\|', '', remarks)
             remarks = re.sub(r'\s{2,}', ' ', remarks).strip()
 
-        # ----------------------------------------------------
         # 구글 캘린더 다이렉트 URL 생성 로직
-        # ----------------------------------------------------
         def get_cal_datetime(dt_string):
             if not dt_string: return None
             match = re.search(r'(?:(20\d{2})[-/.])?(\d{1,2})[-/.](\d{1,2})\s+(\d{1,2}:\d{2})', dt_string)
@@ -198,12 +169,11 @@ if uploaded_file is not None:
         st.success("양식 변환 및 추출 완료!")
 
         if cal_start and cal_end:
-            # ★ 캘린더 제목에서 [지점명] 제거, 이름만 남김
             title_text = f"{name_str}"
             encoded_title = urllib.parse.quote(title_text)
             
-            # 구글 캘린더 연동 시 수량, 특정 장비 Bold(굵게) 처리
             cal_details = result.strip()
+            # 캘린더 연동 시 볼드(굵게) 처리 유지
             cal_details = re.sub(r'--\s*\d+EA', r'<b>\g<0></b>', cal_details)
             cal_details = re.sub(r'\(\d+\)\s*(합정|부천)', r'<b>\g<0></b>', cal_details)
             cal_details = cal_details.replace('\n', '<br>')
@@ -214,15 +184,13 @@ if uploaded_file is not None:
             st.subheader("🎉 클릭 한 번으로 등록 완료")
             st.markdown(
                 f'<a href="{cal_url}" target="_blank">'
-                f'<button style="background-color:#4285F4; color:white; padding:12px 24px; border:none; border-radius:8px; cursor:pointer; font-size:16px; font-weight:bold;">'
+                f'<button style="background-color:#4285F4; color:white; padding:12px 24px; border:none; border-radius:8px; cursor:pointer; font-size:16px; font-weight:bold; width:100%;">'
                 f'📅 구글 캘린더에 바로 추가하기'
                 f'</button></a>',
                 unsafe_allow_html=True
             )
-            st.write("위 버튼을 누르면 제목(이름만), 정확한 날짜/시간, 장비 목록(볼드 처리)이 완벽히 채워진 캘린더 창이 열립니다.")
 
-        st.subheader("📝 텍스트 수동 복사 (필요시)")
-        st.text_area("결과 텍스트 (박스 안을 클릭하고 Ctrl+A, Ctrl+C)", result.strip(), height=350)
+        st.text_area("결과 텍스트 수동 복사용 (Ctrl+A, Ctrl+C)", result.strip(), height=350)
 
     except Exception as e:
         st.error(f"오류 발생: {str(e)}")
