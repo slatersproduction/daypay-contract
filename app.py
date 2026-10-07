@@ -1,10 +1,11 @@
 import streamlit as st
 import re
 from pypdf import PdfReader
+import urllib.parse
 
 st.set_page_config(page_title="데이페이 계약서 변환기", page_icon="📷")
 st.title("📷 데이페이 계약서 자동 변환기")
-st.write("계약서 PDF 파일을 업로드하면 캘린더 자동 등록용 제목과 장비 목록을 추출합니다.")
+st.write("계약서를 올리고 '캘린더에 추가하기' 버튼을 누르면 모든 정보가 1초 만에 자동 등록됩니다.")
 
 uploaded_file = st.file_uploader("계약서 PDF 파일을 여기에 드래그해 주세요", type=["pdf"])
 
@@ -23,6 +24,7 @@ if uploaded_file is not None:
         rent_start = ""
         rent_end = ""
         remarks = ""
+        branch_name = "합정" if "합정" in text else "부천" if "부천" in text else "지점"
         
         remarks_match = re.search(r'비\s*고\s*(.*?)(?=수량|총\s*대여시간|소계|입금은행|\Z)', text, re.DOTALL)
         if remarks_match:
@@ -135,35 +137,26 @@ if uploaded_file is not None:
             i += 1
 
         # ----------------------------------------------------
-        # ★ 구글 캘린더 완벽 인식용 날짜/시간 로직 (물결표 ~ 사용)
+        # ★ 구글 캘린더 다이렉트 URL 생성 로직 (100% 완벽 연동)
         # ----------------------------------------------------
-        def get_dt_info(dt_string):
-            if not dt_string: return None, None, None
-            match = re.search(r'(?:20\d{2}[-/.])?(\d{1,2})[-/.](\d{1,2})\s+(\d{1,2}:\d{2})', dt_string)
+        def get_cal_datetime(dt_string):
+            if not dt_string: return None
+            # 정규식으로 년, 월, 일, 시간 추출
+            match = re.search(r'(?:(20\d{2})[-/.])?(\d{1,2})[-/.](\d{1,2})\s+(\d{1,2}:\d{2})', dt_string)
             if match:
-                month = match.group(1).lstrip('0')
-                day = match.group(2).lstrip('0')
-                time = match.group(3)
-                return month, day, time
-            return None, None, None
+                year = match.group(1) if match.group(1) else "2026"
+                month = match.group(2).zfill(2)
+                day = match.group(3).zfill(2)
+                time_str = match.group(4).replace(":", "") + "00"
+                # 구글 캘린더용 포맷: YYYYMMDDTHHMMSS
+                return f"{year}{month}{day}T{time_str}"
+            return None
 
-        sm, sd, st_time = get_dt_info(rent_start)
-        em, ed, en_time = get_dt_info(rent_end)
-
-        cal_title = ""
+        cal_start = get_cal_datetime(rent_start)
+        cal_end = get_cal_datetime(rent_end)
         name_str = renter_name if renter_name else '이름없음'
-        
-        if sm and sd and st_time and em and ed and en_time:
-            if sm == em and sd == ed:
-                # 당일 예약 (예: 10/24 11:00~21:00 백주암)
-                cal_title = f"{sm}/{sd} {st_time}~{en_time} {name_str}"
-            else:
-                # 다중 날짜 예약 (예: 10/10 21:00 ~ 10/12 21:00 최지우)
-                cal_title = f"{sm}/{sd} {st_time} ~ {em}/{ed} {en_time} {name_str}"
-        else:
-            cal_title = f"시간확인불가 {name_str}"
 
-        # 캘린더 설명란용 결과 텍스트
+        # 결과 텍스트 (설명란용)
         result = f"👤 대여자: {name_str}\n"
         result += f"📅 대여 일시: {rent_start if rent_start else '확인 불가'}\n"
         result += f"📅 반납 일시: {rent_end if rent_end else '확인 불가'}\n\n"
@@ -179,13 +172,26 @@ if uploaded_file is not None:
             result += f"\n*비고\n{remarks}\n"
 
         st.success("양식 변환 및 추출 완료!")
-        
-        st.subheader("1. 캘린더 '제목' 복사용 (시간 완벽 자동설정)")
-        st.info("이 내용을 구글 캘린더 '제목'에 붙여넣고 엔터를 치면 며칠짜리 일정도 시간이 정확하게 잡힙니다.")
-        st.code(cal_title, language="text")
-        
-        st.subheader("2. 캘린더 '설명' 복사용 (장비 목록)")
-        st.text_area("박스 안을 클릭하고 Ctrl+A, Ctrl+C 로 복사하세요", result.strip(), height=400)
+
+        # URL 인코딩 및 버튼 생성
+        if cal_start and cal_end:
+            title_text = f"[{branch_name}] {name_str}"
+            encoded_title = urllib.parse.quote(title_text)
+            encoded_details = urllib.parse.quote(result.strip())
+            cal_url = f"https://calendar.google.com/calendar/render?action=TEMPLATE&text={encoded_title}&dates={cal_start}/{cal_end}&details={encoded_details}"
+            
+            st.subheader("🎉 클릭 한 번으로 등록 완료")
+            st.markdown(
+                f'<a href="{cal_url}" target="_blank">'
+                f'<button style="background-color:#4285F4; color:white; padding:12px 24px; border:none; border-radius:8px; cursor:pointer; font-size:16px; font-weight:bold;">'
+                f'📅 구글 캘린더에 바로 추가하기'
+                f'</button></a>',
+                unsafe_allow_html=True
+            )
+            st.write("위 버튼을 누르면 제목, 날짜, 시간, 장비 목록이 모두 채워진 캘린더 창이 열립니다.")
+
+        st.subheader("📝 텍스트 수동 복사 (필요시)")
+        st.text_area("결과 텍스트 (박스 안을 클릭하고 Ctrl+A, Ctrl+C)", result.strip(), height=350)
 
     except Exception as e:
         st.error(f"오류 발생: {str(e)}")
