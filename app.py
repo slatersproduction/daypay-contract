@@ -46,7 +46,6 @@ if uploaded_file is not None:
         in_table = False
         
         ignore_in_table = ['품명', '관리번호', '수량', '금액', '보험', '보증금', 'NO']
-        
         page_footers = ["국내 최고 수준", "고객지원센터", "1544-2338", "PAGE"]
 
         current_item = ""
@@ -82,4 +81,109 @@ if uploaded_file is not None:
                 
                 if not clean_check or clean_check in ignore_in_table: continue
                 if any(footer in clean_check.upper() for footer in page_footers): continue
-                if re.
+                if re.match(r'^[\d,]+원$', clean_check) or clean_check == '₩': continue
+
+                if current_item:
+                    current_item += " " + clean_check
+                else:
+                    current_item = clean_check
+                    
+                check_str = re.sub(r'\s*₩\s*[\d,]+.*$', '', current_item).strip()
+                check_str = re.sub(r'\s+[\d,]+원.*$', '', check_str).strip()
+                
+                match = re.search(r'\s+(\d+)$', check_str)
+                
+                if match:
+                    qty = match.group(1)
+                    name_part = check_str[:match.start()].strip()
+                    
+                    is_main = bool(re.match(r'^\d+[\s\.]+', name_part))
+                    name_part = re.sub(r'^\d+[\s\.]+', '', name_part)
+                    
+                    name_part = re.sub(r'\bK\d{4,5}-((?:\d+(?:\s*[,、]\s*\d+)*))', format_k_number, name_part)
+                    name_part = re.sub(r'\bK\d{4,5}\b', '', name_part)
+                    name_part = re.sub(r'부천장비|합정장비', '', name_part)
+                    name_part = re.sub(r'\(\s*\)', '', name_part)
+                    
+                    # 콤마, 하이픈 등 기호 보존
+                    name_part = re.sub(r'\s+', ' ', name_part).strip()
+                    
+                    if name_part:
+                        prefix = "- " if is_main else "ㄴ "
+                        if qty == '1':
+                            equipments.append(f"{prefix}{name_part}")
+                        else:
+                            equipments.append(f"{prefix}{name_part} -- {qty}EA")
+                            
+                    current_item = "" 
+
+        if remarks:
+            junk_patterns = [
+                r'할인합계', r'추가\s*요금', r'안심보험', r'총합계.*?\(inc VAT\)',
+                r'보증금', r'연장\s*요금', r'소계', r'부가세', r'사용포인트',
+                r'렌탈금액', r'수량', r'총\s*대여시간',
+                r'₩\s*[\d,]+', r'[\d,]+\s*원', r'\b0\b', r'WO', r'W0',
+                r'\d+시간', r'\d+일', r'inc VAT', r'합계금액\(부가세 포함\)'
+            ]
+            for junk in junk_patterns:
+                remarks = re.sub(junk, '', remarks, flags=re.IGNORECASE)
+            
+            remarks = re.sub(r'\|\s*\|', '', remarks)
+            remarks = re.sub(r'\s{2,}', ' ', remarks).strip()
+
+        def get_cal_datetime(dt_string):
+            if not dt_string: return None
+            match = re.search(r'(?:(20\d{2})[-/.])?(\d{1,2})[-/.](\d{1,2})\s+(\d{1,2}:\d{2})', dt_string)
+            if match:
+                year = match.group(1) if match.group(1) else "2026"
+                month = match.group(2).zfill(2)
+                day = match.group(3).zfill(2)
+                time_str = match.group(4).replace(":", "") + "00"
+                return f"{year}{month}{day}T{time_str}"
+            return None
+
+        cal_start = get_cal_datetime(rent_start)
+        cal_end = get_cal_datetime(rent_end)
+        name_str = renter_name if renter_name else '이름없음'
+
+        result = f"👤 대여자: {name_str}\n"
+        result += f"📅 대여 일시: {rent_start if rent_start else '확인 불가'}\n"
+        result += f"📅 반납 일시: {rent_end if rent_end else '확인 불가'}\n\n"
+        result += "*장비 목록\n"
+        
+        if equipments:
+            for eq in equipments:
+                result += f"{eq}\n"
+        else:
+            result += "- 장비 목록을 자동으로 찾을 수 없습니다.\n"
+            
+        if remarks:
+            result += f"\n*비고\n{remarks}\n"
+
+        st.success("양식 변환 및 추출 완료!")
+
+        if cal_start and cal_end:
+            title_text = f"{name_str}"
+            encoded_title = urllib.parse.quote(title_text)
+            
+            cal_details = result.strip()
+            cal_details = re.sub(r'--\s*\d+EA', r'<b>\g<0></b>', cal_details)
+            cal_details = re.sub(r'\(\d+\)\s*(합정|부천)', r'<b>\g<0></b>', cal_details)
+            cal_details = cal_details.replace('\n', '<br>')
+            
+            encoded_details = urllib.parse.quote(cal_details)
+            cal_url = f"https://calendar.google.com/calendar/render?action=TEMPLATE&text={encoded_title}&dates={cal_start}/{cal_end}&details={encoded_details}"
+            
+            st.subheader("🎉 클릭 한 번으로 등록 완료")
+            st.markdown(
+                f'<a href="{cal_url}" target="_blank">'
+                f'<button style="background-color:#4285F4; color:white; padding:12px 24px; border:none; border-radius:8px; cursor:pointer; font-size:16px; font-weight:bold; width:100%;">'
+                f'📅 구글 캘린더에 바로 추가하기'
+                f'</button></a>',
+                unsafe_allow_html=True
+            )
+
+        st.text_area("결과 텍스트 수동 복사용 (Ctrl+A, Ctrl+C)", result.strip(), height=350)
+
+    except Exception as e:
+        st.error(f"오류 발생: {str(e)}")
