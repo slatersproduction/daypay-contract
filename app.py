@@ -24,7 +24,6 @@ if uploaded_file is not None:
         rent_end = ""
         remarks = ""
         
-        # 비고란 추출
         remarks_match = re.search(r'비\s*고\s*(.*?)(?=수량|총\s*대여시간|소계|입금은행|\Z)', text, re.DOTALL)
         if remarks_match:
             remarks = remarks_match.group(1).replace('\n', ' ').replace('|', '').strip()
@@ -136,34 +135,33 @@ if uploaded_file is not None:
             i += 1
 
         # ----------------------------------------------------
-        # ★ 구글 캘린더 제목용 스마트 날짜/시간 로직
+        # ★ 구글 캘린더 완벽 인식용 날짜/시간 로직 ('부터', '까지' 추가)
         # ----------------------------------------------------
         def get_dt_info(dt_string):
-            # "2026/10/24 11:00" 등에서 월/일, 시간만 추출
+            if not dt_string: return None, None, None
             match = re.search(r'(?:20\d{2}[-/.])?(\d{1,2})[-/.](\d{1,2})\s+(\d{1,2}:\d{2})', dt_string)
             if match:
-                month = match.group(1).zfill(2)
-                day = match.group(2).zfill(2)
+                month = match.group(1).lstrip('0')
+                day = match.group(2).lstrip('0')
                 time = match.group(3)
-                return f"{month}/{day}", time
-            return None, None
+                return month, day, time
+            return None, None, None
 
-        start_date, start_time = get_dt_info(rent_start)
-        end_date, end_time = get_dt_info(rent_end)
+        sm, sd, st_time = get_dt_info(rent_start)
+        em, ed, en_time = get_dt_info(rent_end)
 
         cal_title = ""
         name_str = renter_name if renter_name else '이름없음'
         
-        if start_date and start_time and end_date and end_time:
-            if start_date == end_date:
-                # 당일 예약 (예: 11:00-21:00 백주암)
-                cal_title = f"{start_time}-{end_time} {name_str}"
+        if sm and sd and st_time and em and ed and en_time:
+            if sm == em and sd == ed:
+                # 당일 예약 (예: 10월 24일 11:00 부터 21:00 까지 백주암)
+                cal_title = f"{sm}월 {sd}일 {st_time} 부터 {en_time} 까지 {name_str}"
             else:
-                # 다중 날짜 예약 (예: 10/10 08:00 - 10/12 10:00 백주암)
-                cal_title = f"{start_date} {start_time} - {end_date} {end_time} {name_str}"
+                # 다중 날짜 예약 (예: 10월 10일 08:00 부터 10월 12일 10:00 까지 최지우)
+                cal_title = f"{sm}월 {sd}일 {st_time} 부터 {em}월 {ed}일 {en_time} 까지 {name_str}"
         else:
             cal_title = f"시간확인불가 {name_str}"
-
 
         # 캘린더 설명란용 결과 텍스트
         result = f"👤 대여자: {name_str}\n"
@@ -182,8 +180,8 @@ if uploaded_file is not None:
 
         st.success("양식 변환 및 추출 완료!")
         
-        st.subheader("1. 캘린더 '제목' 복사용 (지점명 제거, 시간 자동설정)")
-        st.info("이 내용을 구글 캘린더 '제목'에 붙여넣고 엔터를 치면 며칠짜리 일정도 시간이 자동 설정됩니다.")
+        st.subheader("1. 캘린더 '제목' 복사용 (시간 완벽 자동설정)")
+        st.info("이 내용을 구글 캘린더 '제목'에 붙여넣고 엔터를 치면 며칠짜리 일정도 시간이 정확하게 잡힙니다.")
         st.code(cal_title, language="text")
         
         st.subheader("2. 캘린더 '설명' 복사용 (장비 목록)")
