@@ -135,7 +135,7 @@ if uploaded_file is not None:
             i += 1
 
         # ----------------------------------------------------
-        # ★ 구글 캘린더 완벽 인식용 날짜/시간 로직 ('부터', '까지' 추가)
+        # ★ 구글 캘린더 완벽 인식용 날짜/시간 로직 (물결표 ~ 사용)
         # ----------------------------------------------------
         def get_dt_info(dt_string):
             if not dt_string: return None, None, None
@@ -155,11 +155,11 @@ if uploaded_file is not None:
         
         if sm and sd and st_time and em and ed and en_time:
             if sm == em and sd == ed:
-                # 당일 예약 (예: 10월 24일 11:00 부터 21:00 까지 백주암)
-                cal_title = f"{sm}월 {sd}일 {st_time} 부터 {en_time} 까지 {name_str}"
+                # 당일 예약 (예: 10/24 11:00~21:00 백주암)
+                cal_title = f"{sm}/{sd} {st_time}~{en_time} {name_str}"
             else:
-                # 다중 날짜 예약 (예: 10월 10일 08:00 부터 10월 12일 10:00 까지 최지우)
-                cal_title = f"{sm}월 {sd}일 {st_time} 부터 {em}월 {ed}일 {en_time} 까지 {name_str}"
+                # 다중 날짜 예약 (예: 10/10 21:00 ~ 10/12 21:00 최지우)
+                cal_title = f"{sm}/{sd} {st_time} ~ {em}/{ed} {en_time} {name_str}"
         else:
             cal_title = f"시간확인불가 {name_str}"
 
