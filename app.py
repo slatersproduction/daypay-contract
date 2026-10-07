@@ -23,7 +23,6 @@ if uploaded_file is not None:
         rent_start = ""
         rent_end = ""
         remarks = ""
-        branch_name = "지점"
         
         # 비고란 추출
         remarks_match = re.search(r'비\s*고\s*(.*?)(?=수량|총\s*대여시간|소계|입금은행|\Z)', text, re.DOTALL)
@@ -36,7 +35,6 @@ if uploaded_file is not None:
             "영수증", "부가가치세", "합계", "데이페이", "수령지점", "반납지점", "임차인"
         ]
 
-        # 기존 키워드에 부천장비, 합정장비 등 모두 포함
         keywords = [
             "Sony", "Canon", "DJI", "Aputure", "Manfrotto", "렌즈", "카메라", "GM", "Mark",
             "FX", "Alpha", "EOS", "Sennheiser", "Rode", "Godox", "Nanlite", "Profoto",
@@ -64,25 +62,18 @@ if uploaded_file is not None:
         while i < len(lines):
             line_str = lines[i]
             
-            # 추출 종료 조건을 TOTAL에서 렌탈금액/소계로 변경 (중간에 끊기는 현상 방지)
             if "렌탈금액" in line_str or "소계" in line_str:
                 break
             
-            # 텍스트 중간에 섞여있는 TOTAL 글자 날리기
             line_str = re.sub(r'\bTOTAL\b', '', line_str, flags=re.IGNORECASE)
             
-            # 대여자 이름 추출
             if "임차인" in line_str and not renter_name:
                 name_clean = re.sub(r'(임차인|성명|귀하|:|\||계약회사명)', '', line_str).strip()
                 if name_clean: renter_name = name_clean
             
-            # 대여/반납 일시 및 지점 추출
             if not rent_start and re.search(r'(수령지점\s*/?\s*일시|대여일시|대여기간)', line_str):
                 clean_str = re.sub(r'.*(수령지점\s*/?\s*일시|대여일시|대여기간)[\s:\|]*', '', line_str).strip()
-                if clean_str: 
-                    rent_start = clean_str
-                    if "부천" in line_str: branch_name = "부천"
-                    elif "합정" in line_str: branch_name = "합정"
+                if clean_str: rent_start = clean_str
                     
             if not rent_end and re.search(r'(반납지점\s*/?\s*일시|반납일시)', line_str):
                 clean_str = re.sub(r'.*(반납지점\s*/?\s*일시|반납일시)[\s:\|]*', '', line_str).strip()
@@ -92,7 +83,6 @@ if uploaded_file is not None:
                 i += 1
                 continue
 
-            # 장비 추출 조건
             is_equipment = ('₩' in line_str) or any(k.lower() in line_str.lower() for k in keywords) or re.search(r'K\d{4,5}', line_str)
 
             if is_equipment:
@@ -125,7 +115,6 @@ if uploaded_file is not None:
                 clean_line = re.sub(r'\bK\d{4,5}-((?:\d+(?:\s*[,、]\s*\d+)*))', format_k_number, clean_line)
                 clean_line = re.sub(r'\bK\d{4,5}\b', '', clean_line)
                 
-                # 부천장비, 합정장비 글자 깔끔하게 제거
                 clean_line = re.sub(r'부천장비|합정장비', '', clean_line)
                 clean_line = re.sub(r'\s+', ' ', clean_line).strip()
                 
@@ -146,17 +135,38 @@ if uploaded_file is not None:
 
             i += 1
 
-        # 캘린더 자동등록용 제목 생성 (예: 11:00-21:00 [부천] 백주암)
-        cal_title = ""
-        start_time_match = re.search(r'\d{2}:\d{2}', rent_start)
-        end_time_match = re.search(r'\d{2}:\d{2}', rent_end)
-        if start_time_match and end_time_match:
-            cal_title = f"{start_time_match.group()}-{end_time_match.group()} [{branch_name}] {renter_name if renter_name else '이름없음'}"
-        else:
-            cal_title = f"시간확인불가 [{branch_name}] {renter_name if renter_name else '이름없음'}"
+        # ----------------------------------------------------
+        # ★ 구글 캘린더 제목용 스마트 날짜/시간 로직
+        # ----------------------------------------------------
+        def get_dt_info(dt_string):
+            # "2026/10/24 11:00" 등에서 월/일, 시간만 추출
+            match = re.search(r'(?:20\d{2}[-/.])?(\d{1,2})[-/.](\d{1,2})\s+(\d{1,2}:\d{2})', dt_string)
+            if match:
+                month = match.group(1).zfill(2)
+                day = match.group(2).zfill(2)
+                time = match.group(3)
+                return f"{month}/{day}", time
+            return None, None
 
-        # 캘린더 설명(상세내용) 텍스트
-        result = f"👤 대여자: {renter_name if renter_name else '확인 불가'}\n"
+        start_date, start_time = get_dt_info(rent_start)
+        end_date, end_time = get_dt_info(rent_end)
+
+        cal_title = ""
+        name_str = renter_name if renter_name else '이름없음'
+        
+        if start_date and start_time and end_date and end_time:
+            if start_date == end_date:
+                # 당일 예약 (예: 11:00-21:00 백주암)
+                cal_title = f"{start_time}-{end_time} {name_str}"
+            else:
+                # 다중 날짜 예약 (예: 10/10 08:00 - 10/12 10:00 백주암)
+                cal_title = f"{start_date} {start_time} - {end_date} {end_time} {name_str}"
+        else:
+            cal_title = f"시간확인불가 {name_str}"
+
+
+        # 캘린더 설명란용 결과 텍스트
+        result = f"👤 대여자: {name_str}\n"
         result += f"📅 대여 일시: {rent_start if rent_start else '확인 불가'}\n"
         result += f"📅 반납 일시: {rent_end if rent_end else '확인 불가'}\n\n"
         result += "*장비 목록\n"
@@ -172,9 +182,8 @@ if uploaded_file is not None:
 
         st.success("양식 변환 및 추출 완료!")
         
-        # 화면 출력 (제목용 / 내용용 분리)
-        st.subheader("1. 캘린더 '제목' 복사용 (시간 자동 설정 됨)")
-        st.info("이 내용을 구글 캘린더 '제목'에 붙여넣고 엔터를 치면 시간이 자동 설정됩니다.")
+        st.subheader("1. 캘린더 '제목' 복사용 (지점명 제거, 시간 자동설정)")
+        st.info("이 내용을 구글 캘린더 '제목'에 붙여넣고 엔터를 치면 며칠짜리 일정도 시간이 자동 설정됩니다.")
         st.code(cal_title, language="text")
         
         st.subheader("2. 캘린더 '설명' 복사용 (장비 목록)")
