@@ -43,7 +43,7 @@ if uploaded_file is not None:
         in_remarks = False
         
         ignore_in_table = ['품명', '관리번호', '수량', '금액', '보험', '보증금', 'NO']
-        page_footers = ["국내 최고 수준", "고객지원센터", "1544-2338", "PAGE"]
+        page_footers = ["국내 최고 수준", "고객지원센터", "1544-2338"]
         
         billing_labels = [
             '수량', '총 대여시간', '렌탈금액', '할인합계', '안심보험', '보증금', '사용포인트', 
@@ -54,7 +54,6 @@ if uploaded_file is not None:
         current_item = ""
 
         for line_str in lines:
-            # 1. 고객명, 대여/반납 일시 추출 (항상 체크)
             if "임차인" in line_str and not renter_name:
                 name_clean = re.sub(r'(임차인|성명|귀하|:|\||계약회사명)', '', line_str).strip()
                 if name_clean and not re.search(r'\d{6}-\d', name_clean):
@@ -68,7 +67,6 @@ if uploaded_file is not None:
                 clean_str = re.sub(r'.*(반납지점\s*/?\s*일시|반납일시)[\s:\|]*', '', line_str).strip()
                 if clean_str: rent_end = clean_str
 
-            # 2. TOTAL 라인 감지 및 비고란 시작 (핵심 구조 개선)
             if "TOTAL" in line_str.upper():
                 in_table = False
                 in_remarks = True
@@ -89,13 +87,16 @@ if uploaded_file is not None:
                         remarks_lines.append(" ".join(valid_chunks))
                 continue
             
-            # 3. 비고란 텍스트 정밀 수집
             if in_remarks:
-                if "입금은행" in line_str or "국내 최고 수준" in line_str:
+                # ★ 쪽수(PAGE 1/1) 및 꼬리말을 비고란에서 차단하는 완벽한 필터
+                if "입금은행" in line_str or "국내 최고 수준" in line_str or "고객지원센터" in line_str:
                     continue 
+                if re.search(r'PAGE\s*\d+/\d+', line_str.upper()):
+                    continue
                     
                 left_chunk = line_str.split('|')[0].strip()
                 left_chunk = re.sub(r'^(비\s*고|비|고)\s*', '', left_chunk).strip()
+                left_chunk = re.sub(r'[-—]*\s*PAGE\s*\d+/\d+\s*[-—]*', '', left_chunk, flags=re.IGNORECASE).strip()
                 
                 for word in billing_labels:
                     left_chunk = left_chunk.replace(word, ' ')
@@ -112,7 +113,6 @@ if uploaded_file is not None:
                     remarks_lines.append(" ".join(valid_chunks))
                 continue
             
-            # 4. 표 내부 장비 처리
             if re.search(r'^NO[\s\|]*품명', line_str) or line_str == 'NO':
                 in_table = True
                 continue
@@ -123,6 +123,7 @@ if uploaded_file is not None:
                 if not clean_check or clean_check in ignore_in_table: continue
                 if any(footer in clean_check.upper() for footer in page_footers): continue
                 if re.match(r'^[\d,]+원$', clean_check) or clean_check == '₩': continue
+                if re.search(r'PAGE\s*\d+/\d+', clean_check.upper()): continue
 
                 if current_item:
                     current_item += " " + clean_check
