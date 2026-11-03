@@ -37,6 +37,38 @@ if uploaded_file is not None:
                 else: res.append(f"({n})")
             return " ".join(res)
 
+        # ★ 강력한 비고란 청소기 (띄어쓰기, 변형 단어 완벽 대응)
+        def clean_remarks_text(raw_text):
+            pat_list = [
+                r'수량\s*\d+', 
+                r'사용\s*포인트\s*\d*', 
+                r'총\s*대여시간\s*\d*(일|시간)?',
+                r'소계\s*₩?\s*[\d,]*', 
+                r'부가세\s*₩?\s*[\d,]*', 
+                r'추가\s*요금\s*[A-Za-z0-9\-]*',
+                r'총합계.*?(₩?\s*[\d,]+)?', 
+                r'연장\s*요금', 
+                r'대여\s*금액', 
+                r'할인\s*합계', 
+                r'안심\s*합계', 
+                r'보증금', 
+                r'\(?\s*포함\s*\)?',
+                r'₩?\s*[\d,]{4,}'
+            ]
+            cleaned = raw_text
+            for pat in pat_list:
+                cleaned = re.sub(pat, ' ', cleaned, flags=re.IGNORECASE)
+                
+            chunks = re.split(r'\s{2,}', cleaned)
+            valid = []
+            for c in chunks:
+                c = c.strip()
+                if not c: continue
+                # 고립된 쓰레기 데이터(0, -WO 등) 최종 삭제
+                if re.match(r'^(\d+시간|\d+일|₩?\s*[\d,]+|-?WO|-?W0|OM-|0|\d+)$', c, re.IGNORECASE): continue
+                valid.append(c)
+            return " ".join(valid)
+
         equipments = []
         remarks_lines = []
         in_table = False
@@ -44,16 +76,12 @@ if uploaded_file is not None:
         
         ignore_in_table = ['품명', '관리번호', '수량', '금액', '보험', '보증금', 'NO']
         page_footers = ["국내 최고 수준", "고객지원센터", "1544-2338"]
-        
-        billing_labels = [
-            '수량', '총 대여시간', '렌탈금액', '할인합계', '안심보험', '보증금', '사용포인트', 
-            '소계', '부가세', '추가 요금', '총합계 (inc VAT)', '총합계', '연장 요금'
-        ]
-        billing_labels = sorted(billing_labels, key=len, reverse=True)
-
         current_item = ""
 
-        for line_str in lines:
+        i = 0
+        while i < len(lines):
+            line_str = lines[i]
+            
             if "임차인" in line_str and not renter_name:
                 name_clean = re.sub(r'(임차인|성명|귀하|:|\||계약회사명)', '', line_str).strip()
                 if name_clean and not re.search(r'\d{6}-\d', name_clean):
@@ -67,77 +95,79 @@ if uploaded_file is not None:
                 clean_str = re.sub(r'.*(반납지점\s*/?\s*일시|반납일시)[\s:\|]*', '', line_str).strip()
                 if clean_str: rent_end = clean_str
 
+            # 비고란 진입 (TOTAL 라인부터 끝까지)
             if "TOTAL" in line_str.upper():
                 in_table = False
                 in_remarks = True
                 
                 clean_total = line_str.split('TOTAL')[0].replace('|', '').strip()
                 clean_total = re.sub(r'^(비\s*고|비|고)\s*', '', clean_total).strip()
-                if clean_total:
-                    for word in billing_labels:
-                        clean_total = clean_total.replace(word, ' ')
-                    chunks = re.split(r'\s{2,}', clean_total)
-                    valid_chunks = []
-                    for chunk in chunks:
-                        c = chunk.strip()
-                        if not c: continue
-                        if re.match(r'^(\d+시간|\d+일|₩?\s*[\d,]+|WO|W0|0)$', c, re.IGNORECASE): continue
-                        valid_chunks.append(c)
-                    if valid_chunks:
-                        remarks_lines.append(" ".join(valid_chunks))
+                result_text = clean_remarks_text(clean_total)
+                if result_text: remarks_lines.append(result_text)
+                i += 1
                 continue
             
             if in_remarks:
                 if "입금은행" in line_str or "국내 최고 수준" in line_str or "고객지원센터" in line_str:
-                    continue 
+                    i += 1; continue 
                 if re.search(r'PAGE\s*\d+/\d+', line_str.upper()):
-                    continue
+                    i += 1; continue
                     
                 left_chunk = line_str.split('|')[0].strip()
                 left_chunk = re.sub(r'^(비\s*고|비|고)\s*', '', left_chunk).strip()
                 left_chunk = re.sub(r'[-—]*\s*PAGE\s*\d+/\d+\s*[-—]*', '', left_chunk, flags=re.IGNORECASE).strip()
                 
-                for word in billing_labels:
-                    left_chunk = left_chunk.replace(word, ' ')
-                    
-                chunks = re.split(r'\s{2,}', left_chunk)
-                valid_chunks = []
-                for chunk in chunks:
-                    c = chunk.strip()
-                    if not c: continue
-                    if re.match(r'^(\d+시간|\d+일|₩?\s*[\d,]+|WO|W0|0)$', c, re.IGNORECASE): continue
-                    valid_chunks.append(c)
-                    
-                if valid_chunks:
-                    remarks_lines.append(" ".join(valid_chunks))
+                result_text = clean_remarks_text(left_chunk)
+                if result_text: remarks_lines.append(result_text)
+                i += 1
                 continue
             
+            # 표 장비 목록 추출
             if re.search(r'^NO[\s\|]*품명', line_str) or line_str == 'NO':
                 in_table = True
+                i += 1
                 continue
             
             if in_table:
                 clean_check = line_str.replace('|', '').strip()
                 
-                if not clean_check or clean_check in ignore_in_table: continue
-                if any(footer in clean_check.upper() for footer in page_footers): continue
-                if re.match(r'^[\d,]+원$', clean_check) or clean_check == '₩': continue
-                if re.search(r'PAGE\s*\d+/\d+', clean_check.upper()): continue
+                if not clean_check or clean_check in ignore_in_table:
+                    i += 1; continue
+                if any(footer in clean_check.upper() for footer in page_footers):
+                    i += 1; continue
+                if re.match(r'^[\d,]+원$', clean_check) or clean_check == '₩':
+                    i += 1; continue
+                if re.search(r'PAGE\s*\d+/\d+', clean_check.upper()):
+                    i += 1; continue
 
                 if current_item:
                     current_item += " " + clean_check
                 else:
                     current_item = clean_check
                     
-                check_str = re.sub(r'\s*₩\s*[\d,]+.*$', '', current_item).strip()
-                check_str = re.sub(r'\s+[\d,]+원.*$', '', check_str).strip()
+                # ★ 장비 분리 조건: 끝에 가격(-WO, OM-, ₩ 등)이 있거나, 다음 줄이 새 장비일 때
+                has_price = re.search(r'(₩\s*[\d,]+|[\d,]+\s*원|-WO|-W0|OM-)\s*$', current_item.replace(' ', ''))
                 
-                match = re.search(r'\s+(\d+)$', check_str)
-                
-                if match:
-                    qty = match.group(1)
-                    name_part = check_str[:match.start()].strip()
+                next_is_new = False
+                if i + 1 < len(lines):
+                    next_line = lines[i+1].replace('|', '').strip()
+                    if re.match(r'^\d+[\s\.]+[A-Za-z가-힣]', next_line) or "TOTAL" in next_line.upper():
+                        next_is_new = True
+                else:
+                    next_is_new = True
                     
+                if has_price or next_is_new:
+                    # 가격(찌꺼기) 분리 후 수량 추출
+                    check_str = re.sub(r'\s*(₩\s*[\d,]+|[\d,]+\s*원|-WO|-W0|OM-)\s*$', '', current_item).strip()
+                    
+                    match = re.search(r'\s+(\d+)$', check_str)
+                    if match:
+                        qty = match.group(1)
+                        name_part = check_str[:match.start()].strip()
+                    else:
+                        qty = '1'
+                        name_part = check_str
+                        
                     is_main = bool(re.match(r'^\d+[\s\.]+', name_part))
                     name_part = re.sub(r'^\d+[\s\.]+', '', name_part)
                     
@@ -155,6 +185,8 @@ if uploaded_file is not None:
                             equipments.append(f"{prefix}{name_part} -- {qty}EA")
                             
                     current_item = "" 
+
+            i += 1
 
         remarks = "\n".join(remarks_lines).strip()
 
@@ -195,7 +227,6 @@ if uploaded_file is not None:
             
             cal_details = result.strip()
             cal_details = re.sub(r'--\s*\d+EA', r'<b>\g<0></b>', cal_details)
-            # ★ 부천을 빼고 오직 "합정"만 볼드 처리하도록 수정했습니다!
             cal_details = re.sub(r'\(\d+\)\s*합정', r'<b>\g<0></b>', cal_details)
             cal_details = cal_details.replace('\n', '<br>')
             
